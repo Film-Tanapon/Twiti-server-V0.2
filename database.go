@@ -386,3 +386,115 @@ func getCommentsByPostID(parentID int) ([]PostFeed, error) {
 	}
 	return comments, nil
 }
+
+// ======================================================================SEARCH========================================================================//
+func searchUsersAndPosts(keyword string, userID int) ([]map[string]interface{}, []map[string]interface{}, error) {
+	searchQuery := "%" + keyword + "%"
+
+	// 1. ค้นหา Users จาก Username (เหมือนเดิม)
+	userRows, err := db.Query(`
+		SELECT id, username, COALESCE(profile_image_url, '') 
+		FROM users 
+		WHERE username ILIKE $1 
+		LIMIT 10`, searchQuery)
+
+	var users []map[string]interface{}
+	if err == nil {
+		defer userRows.Close()
+		for userRows.Next() {
+			var id int
+			var username, profileImage string
+			if err := userRows.Scan(&id, &username, &profileImage); err == nil {
+				users = append(users, map[string]interface{}{
+					"id":                id,
+					"username":          username,
+					"profile_image_url": profileImage,
+				})
+			}
+		}
+	}
+	if users == nil {
+		users = []map[string]interface{}{}
+	}
+
+	// 2. ค้นหา Posts จาก Content (เพิ่ม Subquery ให้เหมือน getFeedPostsWithUser)
+	postRows, err := db.Query(`
+		SELECT 
+			p.id, 
+			p.user_id, 
+			u.username, 
+			COALESCE(u.profile_image_url, ''),
+			p.content, 
+			COALESCE(p.image_urls, '{}'), 
+			p.parent_post_id,
+			p.created_at,
+
+			(SELECT COUNT(*) FROM likes WHERE post_id = p.id),
+			EXISTS(SELECT 1 FROM likes WHERE user_id=$2 AND post_id=p.id),
+
+			(SELECT COUNT(*) FROM reposts WHERE post_id = p.id),
+			EXISTS(SELECT 1 FROM reposts WHERE user_id=$2 AND post_id=p.id),
+
+			EXISTS(SELECT 1 FROM bookmarks WHERE user_id=$2 AND post_id=p.id)
+
+		FROM posts p
+		JOIN users u ON p.user_id = u.id
+		WHERE p.content ILIKE $1
+		ORDER BY p.created_at DESC 
+		LIMIT 20`, searchQuery, userID) // ส่ง userID เข้าไปเป็น $2
+
+	var posts []map[string]interface{}
+	if err == nil {
+		defer postRows.Close()
+		for postRows.Next() {
+			var id, userId int
+			var content, username, profileImage string
+			var imageUrls pq.StringArray
+			var parentPostId *int
+			var createdAt time.Time
+			var likesCount, repostsCount int
+			var isLiked, isReposted, isBookmarked bool
+
+			err := postRows.Scan(
+				&id,
+				&userId,
+				&username,
+				&profileImage,
+				&content,
+				&imageUrls,
+				&parentPostId,
+				&createdAt,
+				&likesCount,
+				&isLiked,
+				&repostsCount,
+				&isReposted,
+				&isBookmarked,
+			)
+
+			if err == nil {
+				posts = append(posts, map[string]interface{}{
+					"post_id":           id,
+					"user_id":           userId, // เก็บไว้ เผื่อหน้า search ต้องใช้
+					"username":          username,
+					"profile_image_url": profileImage, // เก็บไว้ เผื่อหน้า search ต้องใช้
+					"content":           content,
+					"image_urls":        []string(imageUrls), // เก็บไว้
+					"parent_post_id":    parentPostId,        // เก็บไว้
+					"created_at":        createdAt,
+					"likes_count":       likesCount,
+					"is_liked":          isLiked,
+					"reposts_count":     repostsCount,
+					"is_reposted":       isReposted,
+					"is_bookmarked":     isBookmarked,
+				})
+			} else {
+				fmt.Println("Scan error in search:", err)
+			}
+		}
+	}
+	if posts == nil {
+		posts = []map[string]interface{}{}
+	}
+
+	return users, posts, nil
+}

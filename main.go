@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -10,22 +11,49 @@ import (
 )
 
 func main() {
-	// 1. เชื่อมต่อฐานข้อมูล (ดึงฟังก์ชันจาก database.go)
 	_ = godotenv.Load()
 	fmt.Println("เช็คค่า DB_URL:", os.Getenv("DB_URL"))
 
 	initDB()
 	defer db.Close()
 
-	// 2. ตั้งค่า Port
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "3000"
 	}
 
-	// 3. เริ่มทำงาน WebSocket (ดึงฟังก์ชันจาก websocket.go)
+	// เพิ่ม Route สำหรับ Search (HTTP GET)
+	http.HandleFunc("/api/search", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+
+		keyword := r.URL.Query().Get("q")
+		// รับ userId จาก Query String (เช่น /api/search?q=abc&userId=123)
+		userIDStr := r.URL.Query().Get("userID")
+		var userID int
+		fmt.Sscanf(userIDStr, "%d", &userID)
+
+		if keyword == "" {
+			http.Error(w, `{"error": "Missing query parameter 'q'"}`, http.StatusBadRequest)
+			return
+		}
+
+		// ส่ง userID เข้าไปในฟังก์ชันค้นหาด้วย
+		users, posts, err := searchUsersAndPosts(keyword, userID)
+		if err != nil {
+			http.Error(w, `{"error": "Internal server error"}`, http.StatusInternalServerError)
+			return
+		}
+
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"users": users,
+			"posts": posts,
+		})
+	})
+
+	// WebSocket Route เดิมของคุณ
 	http.HandleFunc("/", handleConnections)
 
-	fmt.Println("🚀 WebSocket Server Started on port", port, "...")
+	fmt.Println("🚀 Server Started on port", port, "...")
 	log.Fatal(http.ListenAndServe("0.0.0.0:"+port, nil))
 }

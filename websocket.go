@@ -382,6 +382,18 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 			fmt.Println("User registered:", loggedInUserID)
 		case "send_message":
 			handleSendMessage(req)
+		case "fetch_profile_data":
+			// ดึงโพสต์ทั้ง 3 ประเภทพร้อมกัน
+			posts, _ := GetUserPosts(req.TargetUserID, req.UserID)
+			reposts, _ := GetUserReposts(req.TargetUserID, req.UserID)
+			favorites, _ := GetUserFavorites(req.TargetUserID, req.UserID)
+
+			sendJSON(conn, map[string]interface{}{
+				"action":    "profile_data_response",
+				"posts":     posts,
+				"reposts":   reposts,
+				"favorites": favorites,
+			})
 		case "create_post":
 			handleCreatePost(req)
 		case "toggle_like":
@@ -398,6 +410,22 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 			handleDeletePost(conn, req)
 		case "delete_message":
 			handleDeleteMessage(conn, req)
+
+		// ✅ [ใหม่] ดึง Bookmarks ของตัวเอง
+		case "fetch_bookmarks":
+			if req.UserID == 0 {
+				sendErrorToClient(conn, "Unauthorized")
+				return
+			}
+			posts, err := GetUserBookmarks(req.UserID)
+			if err != nil {
+				sendErrorToClient(conn, "Failed to load bookmarks")
+				return
+			}
+			sendJSON(conn, map[string]interface{}{
+				"action": "bookmarks_response",
+				"data":   posts,
+			})
 
 		default:
 			sendErrorToClient(conn, "Unknown action")

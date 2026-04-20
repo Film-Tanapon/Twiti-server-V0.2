@@ -26,6 +26,55 @@ func initDB() {
 	fmt.Println("✅ Connected to Database successfully!")
 }
 
+func fetchPostsWithStatus(query string, args ...interface{}) ([]map[string]interface{}, error) {
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var posts []map[string]interface{}
+	for rows.Next() {
+		var id, userId int
+		var username string
+		var profileImage, content sql.NullString
+		var imageUrls pq.StringArray
+		var parentPostId *int
+		var createdAt time.Time
+		var likesCount, repostsCount int
+		var isLiked, isReposted, isBookmarked bool
+
+		err := rows.Scan(
+			&id, &userId, &username, &profileImage, &content,
+			&imageUrls, &parentPostId, &createdAt,
+			&likesCount, &isLiked,
+			&repostsCount, &isReposted,
+			&isBookmarked,
+		)
+		if err != nil {
+			fmt.Println("❌ Scan Error:", err)
+			continue
+		}
+
+		posts = append(posts, map[string]interface{}{
+			"post_id":           id,
+			"user_id":           userId,
+			"username":          username,
+			"profile_image_url": profileImage.String,
+			"content":           content.String,
+			"image_urls":        []string(imageUrls),
+			"parent_post_id":    parentPostId,
+			"created_at":        createdAt,
+			"likes_count":       likesCount,
+			"is_liked":          isLiked,
+			"reposts_count":     repostsCount,
+			"is_reposted":       isReposted,
+			"is_bookmarked":     isBookmarked,
+		})
+	}
+	return posts, nil
+}
+
 // ======================================================================USER========================================================================//
 
 func getOrCreateUserByEmail(email string, username string) (int, error) {
@@ -143,76 +192,196 @@ func deletePost(postID int, userID int) error {
 	return nil
 }
 
-// ======================================================================LIKE========================================================================//
-func getFeedPostsWithUser(userID int) ([]map[string]interface{}, error) {
-	rows, err := db.Query(`
-		SELECT 
-			p.id,
-			p.content,
-			p.created_at,
-			u.username,
+// ======================================================================PROFILE POSTS========================================================================//
 
-			(SELECT COUNT(*) FROM likes WHERE post_id = p.id),
-			EXISTS(SELECT 1 FROM likes WHERE user_id=$1 AND post_id=p.id),
-
-			(SELECT COUNT(*) FROM reposts WHERE post_id = p.id),
-			EXISTS(SELECT 1 FROM reposts WHERE user_id=$1 AND post_id=p.id),
-
-			EXISTS(SELECT 1 FROM bookmarks WHERE user_id=$1 AND post_id=p.id)
-
+// ดึงโพสต์ที่ User คนนั้นเป็นเจ้าของ — เพิ่ม is_bookmarked แล้ว
+func GetUserPosts(targetID int, myID int) ([]map[string]interface{}, error) {
+	query := `
+		SELECT p.id, p.user_id, u.username, COALESCE(u.profile_image_url, ''), p.content, COALESCE(p.image_urls, '{}'), 
+		       p.created_at,
+		       (SELECT COUNT(*) FROM likes WHERE post_id = p.id) as likes_count,
+		       EXISTS(SELECT 1 FROM likes WHERE post_id = p.id AND user_id = $2) as is_liked,
+		       (SELECT COUNT(*) FROM reposts WHERE post_id = p.id) as reposts_count,
+		       EXISTS(SELECT 1 FROM reposts WHERE post_id = p.id AND user_id = $2) as is_reposted,
+		       EXISTS(SELECT 1 FROM bookmarks WHERE post_id = p.id AND user_id = $2) as is_bookmarked
 		FROM posts p
 		JOIN users u ON p.user_id = u.id
-		ORDER BY p.created_at DESC
-	`, userID)
+		WHERE p.user_id = $1
+		ORDER BY p.created_at DESC`
+	return fetchPostsByQuery(query, targetID, myID)
+}
 
+// ดึงโพสต์ที่ User คนนั้นเคยไปกด Repost ไว้ — เพิ่ม is_bookmarked แล้ว
+func GetUserReposts(targetID int, myID int) ([]map[string]interface{}, error) {
+	query := `
+		SELECT p.id, p.user_id, u.username, COALESCE(u.profile_image_url, ''), p.content, COALESCE(p.image_urls, '{}'), 
+		       p.created_at,
+		       (SELECT COUNT(*) FROM likes WHERE post_id = p.id) as likes_count,
+		       EXISTS(SELECT 1 FROM likes WHERE post_id = p.id AND user_id = $2) as is_liked,
+		       (SELECT COUNT(*) FROM reposts WHERE post_id = p.id) as reposts_count,
+		       EXISTS(SELECT 1 FROM reposts WHERE post_id = p.id AND user_id = $2) as is_reposted,
+		       EXISTS(SELECT 1 FROM bookmarks WHERE post_id = p.id AND user_id = $2) as is_bookmarked
+		FROM posts p
+		JOIN users u ON p.user_id = u.id
+		JOIN reposts r ON p.id = r.post_id
+		WHERE r.user_id = $1
+		ORDER BY r.created_at DESC`
+	return fetchPostsByQuery(query, targetID, myID)
+}
+
+// ดึงโพสต์ที่ User คนนั้นเคยไปกด Like (Favorite) ไว้ — เพิ่ม is_bookmarked แล้ว
+func GetUserFavorites(targetID int, myID int) ([]map[string]interface{}, error) {
+	query := `
+		SELECT p.id, p.user_id, u.username, COALESCE(u.profile_image_url, ''), p.content, COALESCE(p.image_urls, '{}'), 
+		       p.created_at,
+		       (SELECT COUNT(*) FROM likes WHERE post_id = p.id) as likes_count,
+		       EXISTS(SELECT 1 FROM likes WHERE post_id = p.id AND user_id = $2) as is_liked,
+		       (SELECT COUNT(*) FROM reposts WHERE post_id = p.id) as reposts_count,
+		       EXISTS(SELECT 1 FROM reposts WHERE post_id = p.id AND user_id = $2) as is_reposted,
+		       EXISTS(SELECT 1 FROM bookmarks WHERE post_id = p.id AND user_id = $2) as is_bookmarked
+		FROM posts p
+		JOIN users u ON p.user_id = u.id
+		JOIN likes l ON p.id = l.post_id
+		WHERE l.user_id = $1
+		ORDER BY l.created_at DESC`
+	return fetchPostsByQuery(query, targetID, myID)
+}
+
+// ✅ [ใหม่] ดึงโพสต์ที่ User คนนั้นเคย Bookmark ไว้
+func GetUserBookmarks(myID int) ([]map[string]interface{}, error) {
+	query := `
+		SELECT p.id, p.user_id, u.username, COALESCE(u.profile_image_url, ''), p.content, COALESCE(p.image_urls, '{}'), 
+		       p.created_at,
+		       (SELECT COUNT(*) FROM likes WHERE post_id = p.id) as likes_count,
+		       EXISTS(SELECT 1 FROM likes WHERE post_id = p.id AND user_id = $1) as is_liked,
+		       (SELECT COUNT(*) FROM reposts WHERE post_id = p.id) as reposts_count,
+		       EXISTS(SELECT 1 FROM reposts WHERE post_id = p.id AND user_id = $1) as is_reposted,
+		       TRUE as is_bookmarked
+		FROM posts p
+		JOIN users u ON p.user_id = u.id
+		JOIN bookmarks b ON p.id = b.post_id
+		WHERE b.user_id = $1
+		ORDER BY b.created_at DESC`
+
+	rows, err := db.Query(query, myID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
 	var posts []map[string]interface{}
-
 	for rows.Next() {
-		var postID int
-		var content, username string
+		var id, userId, likesCount, repostsCount int
+		var username, profileImage, content string
+		var imageUrls pq.StringArray
 		var createdAt time.Time
-		var likesCount, repostsCount int
 		var isLiked, isReposted, isBookmarked bool
 
 		err := rows.Scan(
-			&postID,
-			&content,
-			&createdAt,
-			&username,
-			&likesCount,
-			&isLiked,
-			&repostsCount,
-			&isReposted,
+			&id, &userId, &username, &profileImage, &content,
+			&imageUrls, &createdAt,
+			&likesCount, &isLiked,
+			&repostsCount, &isReposted,
 			&isBookmarked,
 		)
 		if err != nil {
+			fmt.Println("❌ GetUserBookmarks Scan Error:", err)
 			continue
 		}
 
 		posts = append(posts, map[string]interface{}{
-			"post_id":       postID,
-			"content":       content,
-			"created_at":    createdAt,
-			"username":      username,
-			"likes_count":   likesCount,
-			"is_liked":      isLiked,
-			"reposts_count": repostsCount,
-			"is_reposted":   isReposted,
-			"is_bookmarked": isBookmarked,
+			"post_id":           id,
+			"user_id":           userId,
+			"username":          username,
+			"profile_image_url": profileImage,
+			"content":           content,
+			"image_urls":        []string(imageUrls),
+			"created_at":        createdAt,
+			"likes_count":       likesCount,
+			"is_liked":          isLiked,
+			"reposts_count":     repostsCount,
+			"is_reposted":       isReposted,
+			"is_bookmarked":     isBookmarked,
 		})
 	}
 
+	if posts == nil {
+		posts = []map[string]interface{}{}
+	}
 	return posts, nil
 }
 
+// ฟังก์ชัน Helper — เพิ่ม scan is_bookmarked และส่งออกมาด้วย
+func fetchPostsByQuery(query string, targetID int, myID int) ([]map[string]interface{}, error) {
+	rows, err := db.Query(query, targetID, myID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var posts []map[string]interface{}
+	for rows.Next() {
+		var id, userId, likesCount, repostsCount int
+		var username, profileImage, content string
+		var imageUrls pq.StringArray
+		var createdAt time.Time
+		var isLiked, isReposted, isBookmarked bool
+
+		err := rows.Scan(
+			&id, &userId, &username, &profileImage, &content,
+			&imageUrls, &createdAt,
+			&likesCount, &isLiked,
+			&repostsCount, &isReposted,
+			&isBookmarked,
+		)
+		if err != nil {
+			fmt.Println("❌ fetchPostsByQuery Scan Error:", err)
+			continue
+		}
+
+		posts = append(posts, map[string]interface{}{
+			"post_id":           id,
+			"user_id":           userId,
+			"username":          username,
+			"profile_image_url": profileImage,
+			"content":           content,
+			"image_urls":        []string(imageUrls),
+			"created_at":        createdAt,
+			"likes_count":       likesCount,
+			"is_liked":          isLiked,
+			"reposts_count":     repostsCount,
+			"is_reposted":       isReposted,
+			"is_bookmarked":     isBookmarked,
+		})
+	}
+
+	if posts == nil {
+		posts = []map[string]interface{}{}
+	}
+	return posts, nil
+}
+
+func getFeedPostsWithUser(userID int) ([]map[string]interface{}, error) {
+	query := `
+		SELECT 
+			p.id, p.user_id, u.username, COALESCE(u.profile_image_url, ''),
+			p.content, COALESCE(p.image_urls, '{}'), p.parent_post_id, p.created_at,
+			(SELECT COUNT(*) FROM likes WHERE post_id = p.id) as likes_count,
+			EXISTS(SELECT 1 FROM likes WHERE post_id = p.id AND user_id = $1) as is_liked,
+			(SELECT COUNT(*) FROM reposts WHERE post_id = p.id) as reposts_count,
+			EXISTS(SELECT 1 FROM reposts WHERE post_id = p.id AND user_id = $1) as is_reposted,
+			EXISTS(SELECT 1 FROM bookmarks WHERE post_id = p.id AND user_id = $1) as is_bookmarked
+		FROM posts p
+		JOIN users u ON p.user_id = u.id
+		WHERE p.parent_post_id IS NULL
+		ORDER BY p.created_at DESC
+		LIMIT 50`
+	return fetchPostsWithStatus(query, userID)
+}
+
+// ======================================================================LIKE========================================================================//
 func toggleLike(userID int, postID int) (bool, error) {
 	var isLiked bool
-
 	err := db.QueryRow("SELECT EXISTS(SELECT 1 FROM likes WHERE user_id=$1 AND post_id=$2)", userID, postID).Scan(&isLiked)
 	if err != nil {
 		return false, err
@@ -223,15 +392,28 @@ func toggleLike(userID int, postID int) (bool, error) {
 		if err != nil {
 			return true, err
 		}
-		return false, nil
-
 	} else {
 		_, err = db.Exec("INSERT INTO likes (user_id, post_id) VALUES ($1, $2)", userID, postID)
 		if err != nil {
 			return false, err
 		}
-		return true, nil
 	}
+
+	var likesCount int
+	var repostsCount int
+	db.QueryRow("SELECT COUNT(*) FROM likes WHERE post_id=$1", postID).Scan(&likesCount)
+	db.QueryRow("SELECT COUNT(*) FROM reposts WHERE post_id=$1", postID).Scan(&repostsCount)
+
+	broadcast(map[string]interface{}{
+		"action": "update_post_stats",
+		"data": map[string]interface{}{
+			"post_id":       postID,
+			"likes_count":   likesCount,
+			"reposts_count": repostsCount,
+		},
+	})
+
+	return !isLiked, nil
 }
 
 // ======================================================================REPOST========================================================================//
@@ -243,20 +425,32 @@ func toggleRepost(userID int, postID int) (bool, error) {
 	}
 
 	if isReposted {
-		// ยกเลิกการรีโพสต์
 		_, err = db.Exec("DELETE FROM reposts WHERE user_id=$1 AND post_id=$2", userID, postID)
 		if err != nil {
 			return true, err
 		}
-		return false, nil
 	} else {
-		// รีโพสต์
 		_, err = db.Exec("INSERT INTO reposts (user_id, post_id) VALUES ($1, $2)", userID, postID)
 		if err != nil {
 			return false, err
 		}
-		return true, nil
 	}
+
+	var likesCount int
+	var repostsCount int
+	db.QueryRow("SELECT COUNT(*) FROM likes WHERE post_id=$1", postID).Scan(&likesCount)
+	db.QueryRow("SELECT COUNT(*) FROM reposts WHERE post_id=$1", postID).Scan(&repostsCount)
+
+	broadcast(map[string]interface{}{
+		"action": "update_post_stats",
+		"data": map[string]interface{}{
+			"post_id":       postID,
+			"likes_count":   likesCount,
+			"reposts_count": repostsCount,
+		},
+	})
+
+	return !isReposted, nil
 }
 
 // ======================================================================BOOKMARK========================================================================//
@@ -268,14 +462,12 @@ func toggleBookmark(userID int, postID int) (bool, error) {
 	}
 
 	if isBookmarked {
-		// ยกเลิกการบันทึก
 		_, err = db.Exec("DELETE FROM bookmarks WHERE user_id=$1 AND post_id=$2", userID, postID)
 		if err != nil {
 			return true, err
 		}
 		return false, nil
 	} else {
-		// บันทึกโพสต์
 		_, err = db.Exec("INSERT INTO bookmarks (user_id, post_id) VALUES ($1, $2)", userID, postID)
 		if err != nil {
 			return false, err
@@ -391,7 +583,7 @@ func getCommentsByPostID(parentID int) ([]PostFeed, error) {
 func searchUsersAndPosts(keyword string, userID int) ([]map[string]interface{}, []map[string]interface{}, error) {
 	searchQuery := "%" + keyword + "%"
 
-	// 1. ค้นหา Users จาก Username (เหมือนเดิม)
+	// 1. ค้นหา Users จาก Username
 	userRows, err := db.Query(`
 		SELECT id, username, COALESCE(profile_image_url, '') 
 		FROM users 
@@ -417,7 +609,7 @@ func searchUsersAndPosts(keyword string, userID int) ([]map[string]interface{}, 
 		users = []map[string]interface{}{}
 	}
 
-	// 2. ค้นหา Posts จาก Content (เพิ่ม Subquery ให้เหมือน getFeedPostsWithUser)
+	// 2. ค้นหา Posts จาก Content
 	postRows, err := db.Query(`
 		SELECT 
 			p.id, 
@@ -441,7 +633,7 @@ func searchUsersAndPosts(keyword string, userID int) ([]map[string]interface{}, 
 		JOIN users u ON p.user_id = u.id
 		WHERE p.content ILIKE $1
 		ORDER BY p.created_at DESC 
-		LIMIT 20`, searchQuery, userID) // ส่ง userID เข้าไปเป็น $2
+		LIMIT 20`, searchQuery, userID)
 
 	var posts []map[string]interface{}
 	if err == nil {
@@ -474,12 +666,12 @@ func searchUsersAndPosts(keyword string, userID int) ([]map[string]interface{}, 
 			if err == nil {
 				posts = append(posts, map[string]interface{}{
 					"post_id":           id,
-					"user_id":           userId, // เก็บไว้ เผื่อหน้า search ต้องใช้
+					"user_id":           userId,
 					"username":          username,
-					"profile_image_url": profileImage, // เก็บไว้ เผื่อหน้า search ต้องใช้
+					"profile_image_url": profileImage,
 					"content":           content,
-					"image_urls":        []string(imageUrls), // เก็บไว้
-					"parent_post_id":    parentPostId,        // เก็บไว้
+					"image_urls":        []string(imageUrls),
+					"parent_post_id":    parentPostId,
 					"created_at":        createdAt,
 					"likes_count":       likesCount,
 					"is_liked":          isLiked,

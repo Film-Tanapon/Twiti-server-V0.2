@@ -34,16 +34,17 @@ type Message struct {
 }
 
 type ActionRequest struct {
-	Action     string   `json:"action"`
-	UserID     int      `json:"user_id"`
-	ReceiverID int      `json:"receiver_id,omitempty"`
-	PostID     int      `json:"post_id,omitempty"`
-	Content    string   `json:"content,omitempty"`
-	ImageURLs  []string `json:"image_urls,omitempty"`
-	ImageURL   string   `json:"image_url,omitempty"`
-	Token      string   `json:"token,omitempty"`
-	Email      string   `json:"email,omitempty"`
-	Username   string   `json:"username,omitempty"`
-	Password   string   `json:"password,omitempty"`
-	OTP        string   `json:"otp,omitempty"`
+	Action       string   `json:"action"`
+	UserID       int      `json:"user_id"`
+	TargetUserID int      `json:"target_user_id,omitempty"`
+	ReceiverID   int      `json:"receiver_id,omitempty"`
+	PostID       int      `json:"post_id,omitempty"`
+	Content      string   `json:"content,omitempty"`
+	ImageURLs    []string `json:"image_urls,omitempty"`
+	ImageURL     string   `json:"image_url,omitempty"`
+	Token        string   `json:"token,omitempty"`
+	Email        string   `json:"email,omitempty"`
+	Username     string   `json:"username,omitempty"`
+	Password     string   `json:"password,omitempty"`
+	OTP          string   `json:"otp,omitempty"`
 }

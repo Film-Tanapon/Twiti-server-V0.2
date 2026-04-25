@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -18,7 +19,18 @@ var mutex = &sync.Mutex{}
 
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
-		return true
+		allowed := os.Getenv("ALLOWED_ORIGINS")
+		if allowed == "" || allowed == "*" {
+			return true
+		}
+		origins := strings.Split(allowed, ",")
+		origin := r.Header.Get("Origin")
+		for _, o := range origins {
+			if strings.TrimSpace(o) == origin {
+				return true
+			}
+		}
+		return false
 	},
 }
 
@@ -544,6 +556,8 @@ func broadcast(data map[string]interface{}) {
 }
 
 func handleConnections(w http.ResponseWriter, r *http.Request) {
+	fmt.Printf("Incoming request to %s\n", r.URL.Path)
+	fmt.Printf("Headers: %v\n", r.Header)
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		fmt.Println("WebSocket Upgrade Error:", err)

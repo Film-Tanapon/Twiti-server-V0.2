@@ -18,12 +18,16 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o main .
 FROM alpine:latest
 WORKDIR /root/
 
-# 3. ติดตั้ง ca-certificates (สำหรับยิง API Google Login) และ tzdata (สำหรับจัดการโซนเวลา)
-RUN apk --no-cache add ca-certificates tzdata
+# 3. ติดตั้ง ca-certificates (สำหรับยิง API Google Login), tzdata (สำหรับจัดการโซนเวลา), และ curl (สำหรับ health check)
+RUN apk --no-cache add ca-certificates tzdata curl
 
 COPY --from=builder /app/main .
 
 # เปิด Port (Render จะจัดการต่อเอง)
 EXPOSE 3000
+
+# Health check สำหรับ Render
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+  CMD curl -f http://localhost:$PORT/health || exit 1
 
 CMD ["./main"]

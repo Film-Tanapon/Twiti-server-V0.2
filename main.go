@@ -51,6 +51,12 @@ func main() {
 		})
 	})
 
+	// เพิ่ม Health Check endpoint สำหรับ Render
+	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+	})
+
 	// WebSocket Route เดิมของคุณ
 	http.HandleFunc("/", handleConnections)
 	http.HandleFunc("/ws", handleConnections)

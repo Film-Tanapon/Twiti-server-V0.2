@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/lib/pq"
+	"golang.org/x/crypto/bcrypt"
 )
 
 var db *sql.DB
@@ -77,6 +78,100 @@ func fetchPostsWithStatus(query string, args ...interface{}) ([]map[string]inter
 
 // ======================================================================USER========================================================================//
 
+func getAccountInfoFromDB(userID int) (map[string]interface{}, error) {
+	var email, username string
+	var phone, country, birthDate sql.NullString
+
+	// ดึงข้อมูลตามโครงสร้าง Database ของคุณ
+	err := db.QueryRow(`
+		SELECT email, username, phone, country, birth_date 
+		FROM users WHERE id = $1`, userID).
+		Scan(&email, &username, &phone, &country, &birthDate)
+
+	if err != nil {
+		return nil, err
+	}
+
+	// จัดการเรื่องวันที่ (ตัดเอาแค่ YYYY-MM-DD)
+	birthDateStr := ""
+	if birthDate.Valid {
+		birthDateStr = birthDate.String
+		if len(birthDateStr) >= 10 {
+			birthDateStr = birthDateStr[:10]
+		}
+	}
+
+	return map[string]interface{}{
+		"email":      email,
+		"username":   username,
+		"phone":      phone.String,   // ถ้าเป็น Null จะได้ ""
+		"country":    country.String, // ถ้าเป็น Null จะได้ ""
+		"birth_date": birthDateStr,
+	}, nil
+}
+
+func updateAccountField(userID int, field string, value string) error {
+	// Whitelist ป้องกัน SQL Injection เนื่องจากเราจะเอาตัวแปร field ไปต่อ String ตรงๆ
+	allowedFields := map[string]bool{
+		"username":   true,
+		"email":      true,
+		"phone":      true,
+		"country":    true,
+		"birth_date": true,
+	}
+
+	if !allowedFields[field] {
+		return fmt.Errorf("invalid field name: %s", field)
+	}
+
+	// ใช้ fmt.Sprintf เพื่อกำหนดชื่อคอลัมน์แบบ Dynamic (ปลอดภัยเพราะผ่าน Whitelist แล้ว)
+	query := fmt.Sprintf("UPDATE users SET %s = $1 WHERE id = $2", field)
+	res, err := db.Exec(query, value, userID)
+	if err != nil {
+		return err
+	}
+
+	rowsAffected, _ := res.RowsAffected()
+	if rowsAffected == 0 {
+		return fmt.Errorf("user not found")
+	}
+	return nil
+}
+
+func changePassword(userID int, oldPassword string, newPassword string) error {
+	// 1. ดึง password_hash ปัจจุบัน
+	var currentHash string
+	err := db.QueryRow("SELECT password_hash FROM users WHERE id = $1", userID).Scan(&currentHash)
+	if err != nil {
+		return fmt.Errorf("user not found")
+	}
+
+	// 2. ตรวจสอบรหัสผ่านเดิม
+	err = bcrypt.CompareHashAndPassword([]byte(currentHash), []byte(oldPassword))
+	if err != nil {
+		return fmt.Errorf("incorrect current password")
+	}
+
+	// 3. Hash รหัสผ่านใหม่
+	hashedNewPassword, err := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
+	if err != nil {
+		return fmt.Errorf("error hashing new password")
+	}
+
+	// 4. อัปเดตรหัสผ่านใหม่
+	res, err := db.Exec("UPDATE users SET password_hash = $1 WHERE id = $2", string(hashedNewPassword), userID)
+	if err != nil {
+		return err
+	}
+
+	rowsAffected, _ := res.RowsAffected()
+	if rowsAffected == 0 {
+		return fmt.Errorf("user not found")
+	}
+
+	return nil
+}
+
 func getOrCreateUserByEmail(email string, username string) (int, error) {
 	var userID int
 	err := db.QueryRow("SELECT id FROM users WHERE email = $1", email).Scan(&userID)
@@ -89,12 +184,23 @@ func getOrCreateUserByEmail(email string, username string) (int, error) {
 
 func getUserByID(userID int) (*User, error) {
 	var user User
-	var profileImage, coverImage sql.NullString
+	// ใช้ sql.NullString เพื่อรองรับค่า NULL จาก Database
+	var profileImage, coverImage, phone, country, birthDate sql.NullString
 
 	err := db.QueryRow(`
-		SELECT id, email, username, profile_image_url, cover_image_url, created_at 
+		SELECT id, email, username, profile_image_url, cover_image_url, phone, country, birth_date, created_at 
 		FROM users WHERE id = $1`, userID).
-		Scan(&user.ID, &user.Email, &user.Username, &profileImage, &coverImage, &user.CreatedAt)
+		Scan(
+			&user.ID,
+			&user.Email,
+			&user.Username,
+			&profileImage,
+			&coverImage,
+			&phone,     // 🟢
+			&country,   // 🟢
+			&birthDate, // 🟢
+			&user.CreatedAt,
+		)
 
 	if err != nil {
 		return nil, err
@@ -102,6 +208,19 @@ func getUserByID(userID int) (*User, error) {
 
 	user.ProfileImageURL = profileImage.String
 	user.CoverImageURL = coverImage.String
+
+	// 🟢 Map ค่าลงใน Pointer ให้ถูกต้อง
+	if phone.Valid {
+		user.Phone = &phone.String
+	}
+	if country.Valid {
+		user.Country = &country.String
+	}
+	if birthDate.Valid {
+		// ตัดเวลาออก เอาเฉพาะ YYYY-MM-DD
+		dateStr := birthDate.String[:10]
+		user.BirthDate = &dateStr
+	}
 
 	return &user, nil
 }
@@ -125,6 +244,49 @@ func updateUserProfile(userID int, username string, profileImageURL string, cove
 func deleteUser(userID int) error {
 	_, err := db.Exec("DELETE FROM users WHERE id = $1", userID)
 	return err
+}
+
+// ======================================================================FOLLOW========================================================================//
+
+// getFollowStatus ตรวจสอบว่า followerID ติดตาม followingID อยู่หรือเปล่า
+func getFollowStatus(followerID int, followingID int) (bool, error) {
+	var exists bool
+	err := db.QueryRow(
+		"SELECT EXISTS(SELECT 1 FROM follows WHERE follower_id=$1 AND following_id=$2)",
+		followerID, followingID,
+	).Scan(&exists)
+	return exists, err
+}
+
+// toggleFollow บันทึก/ยกเลิก follow ลงตาราง follows
+// คืนค่า isFollowing = true ถ้าตอนนี้ follow อยู่ (เพิ่งกด follow)
+func toggleFollow(followerID int, followingID int) (bool, error) {
+	isFollowing, err := getFollowStatus(followerID, followingID)
+	if err != nil {
+		return false, err
+	}
+
+	if isFollowing {
+		// Unfollow
+		_, err = db.Exec(
+			"DELETE FROM follows WHERE follower_id=$1 AND following_id=$2",
+			followerID, followingID,
+		)
+		if err != nil {
+			return true, err
+		}
+		return false, nil
+	}
+
+	// Follow
+	_, err = db.Exec(
+		"INSERT INTO follows (follower_id, following_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+		followerID, followingID,
+	)
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // ======================================================================POST========================================================================//
@@ -194,7 +356,6 @@ func deletePost(postID int, userID int) error {
 
 // ======================================================================PROFILE POSTS========================================================================//
 
-// ดึงโพสต์ที่ User คนนั้นเป็นเจ้าของ — เพิ่ม is_bookmarked แล้ว
 func GetUserPosts(targetID int, myID int) ([]map[string]interface{}, error) {
 	query := `
 		SELECT p.id, p.user_id, u.username, COALESCE(u.profile_image_url, ''), p.content, COALESCE(p.image_urls, '{}'), 
@@ -211,7 +372,6 @@ func GetUserPosts(targetID int, myID int) ([]map[string]interface{}, error) {
 	return fetchPostsByQuery(query, targetID, myID)
 }
 
-// ดึงโพสต์ที่ User คนนั้นเคยไปกด Repost ไว้ — เพิ่ม is_bookmarked แล้ว
 func GetUserReposts(targetID int, myID int) ([]map[string]interface{}, error) {
 	query := `
 		SELECT p.id, p.user_id, u.username, COALESCE(u.profile_image_url, ''), p.content, COALESCE(p.image_urls, '{}'), 
@@ -229,7 +389,6 @@ func GetUserReposts(targetID int, myID int) ([]map[string]interface{}, error) {
 	return fetchPostsByQuery(query, targetID, myID)
 }
 
-// ดึงโพสต์ที่ User คนนั้นเคยไปกด Like (Favorite) ไว้ — เพิ่ม is_bookmarked แล้ว
 func GetUserFavorites(targetID int, myID int) ([]map[string]interface{}, error) {
 	query := `
 		SELECT p.id, p.user_id, u.username, COALESCE(u.profile_image_url, ''), p.content, COALESCE(p.image_urls, '{}'), 
@@ -247,7 +406,6 @@ func GetUserFavorites(targetID int, myID int) ([]map[string]interface{}, error) 
 	return fetchPostsByQuery(query, targetID, myID)
 }
 
-// ✅ [ใหม่] ดึงโพสต์ที่ User คนนั้นเคย Bookmark ไว้
 func GetUserBookmarks(myID int) ([]map[string]interface{}, error) {
 	query := `
 		SELECT p.id, p.user_id, u.username, COALESCE(u.profile_image_url, ''), p.content, COALESCE(p.image_urls, '{}'), 
@@ -311,7 +469,6 @@ func GetUserBookmarks(myID int) ([]map[string]interface{}, error) {
 	return posts, nil
 }
 
-// ฟังก์ชัน Helper — เพิ่ม scan is_bookmarked และส่งออกมาด้วย
 func fetchPostsByQuery(query string, targetID int, myID int) ([]map[string]interface{}, error) {
 	rows, err := db.Query(query, targetID, myID)
 	if err != nil {
@@ -535,6 +692,59 @@ func getChatHistory(user1ID int, user2ID int) ([]Message, error) {
 	return history, nil
 }
 
+// getChatList ดึงรายการแชทล่าสุดของ userID
+// แต่ละแถวคือคู่สนทนา พร้อมข้อความล่าสุดและเวลา
+func getChatList(userID int) ([]map[string]interface{}, error) {
+	rows, err := db.Query(`
+		WITH ranked_messages AS (
+			SELECT
+				m.*,
+				CASE WHEN m.sender_id = $1 THEN m.receiver_id ELSE m.sender_id END AS partner_id,
+				ROW_NUMBER() OVER (
+					PARTITION BY LEAST(m.sender_id, m.receiver_id), GREATEST(m.sender_id, m.receiver_id)
+					ORDER BY m.created_at DESC
+				) AS rn
+			FROM messages m
+			WHERE m.sender_id = $1 OR m.receiver_id = $1
+		)
+		SELECT
+			rm.partner_id,
+			u.username AS partner_name,
+			COALESCE(u.profile_image_url, '') AS profile_image_url,
+			COALESCE(rm.content, '') AS last_message,
+			rm.created_at
+		FROM ranked_messages rm
+		JOIN users u ON u.id = rm.partner_id
+		WHERE rm.rn = 1
+		ORDER BY rm.created_at DESC`, userID)
+
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var chatList []map[string]interface{}
+	for rows.Next() {
+		var partnerID int
+		var partnerName, profileImage, lastMessage string
+		var createdAt time.Time
+
+		if err := rows.Scan(&partnerID, &partnerName, &profileImage, &lastMessage, &createdAt); err == nil {
+			chatList = append(chatList, map[string]interface{}{
+				"room_id":           partnerID, // ใช้ partner_id เป็น room_id เพื่อเปิดห้องแชท
+				"name":              partnerName,
+				"profile_image_url": profileImage,
+				"message":           lastMessage,
+				"time":              createdAt.Format("2006-01-02T15:04:05Z07:00"),
+			})
+		}
+	}
+	if chatList == nil {
+		chatList = []map[string]interface{}{}
+	}
+	return chatList, nil
+}
+
 func deleteMessage(msgID int, senderID int) error {
 	res, err := db.Exec("DELETE FROM messages WHERE id = $1 AND sender_id = $2", msgID, senderID)
 	if err != nil {
@@ -583,7 +793,6 @@ func getCommentsByPostID(parentID int) ([]PostFeed, error) {
 func searchUsersAndPosts(keyword string, userID int) ([]map[string]interface{}, []map[string]interface{}, error) {
 	searchQuery := "%" + keyword + "%"
 
-	// 1. ค้นหา Users จาก Username
 	userRows, err := db.Query(`
 		SELECT id, username, COALESCE(profile_image_url, '') 
 		FROM users 
@@ -609,7 +818,6 @@ func searchUsersAndPosts(keyword string, userID int) ([]map[string]interface{}, 
 		users = []map[string]interface{}{}
 	}
 
-	// 2. ค้นหา Posts จาก Content
 	postRows, err := db.Query(`
 		SELECT 
 			p.id, 

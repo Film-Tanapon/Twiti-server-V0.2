@@ -8,6 +8,9 @@ type User struct {
 	Username        string    `json:"username"`
 	ProfileImageURL string    `json:"profile_image_url"`
 	CoverImageURL   string    `json:"cover_image_url"`
+	Phone           *string   `json:"phone"`
+	Country         *string   `json:"country"`
+	BirthDate       *string   `json:"birth_date"`
 	CreatedAt       time.Time `json:"created_at"`
 }
 
@@ -46,5 +49,8 @@ type ActionRequest struct {
 	Email        string   `json:"email,omitempty"`
 	Username     string   `json:"username,omitempty"`
 	Password     string   `json:"password,omitempty"`
+	OldPassword  string   `json:"old_password,omitempty"`
 	OTP          string   `json:"otp,omitempty"`
+	Field        string   `json:"field,omitempty"`
+	Value        string   `json:"value,omitempty"`
 }

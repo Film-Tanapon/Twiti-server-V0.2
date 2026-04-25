@@ -475,6 +475,25 @@ func handleGetNotifications(conn *websocket.Conn, req ActionRequest) {
 	})
 }
 
+func handleSearch(conn *websocket.Conn, req ActionRequest) {
+	if req.Query == "" {
+		sendErrorToClient(conn, "Missing search query")
+		return
+	}
+
+	users, posts, err := searchUsersAndPosts(req.Query, req.UserID)
+	if err != nil {
+		sendErrorToClient(conn, "Search failed")
+		return
+	}
+
+	sendJSON(conn, map[string]interface{}{
+		"action": "search_results",
+		"users":  users,
+		"posts":  posts,
+	})
+}
+
 func handleGetChatHistory(conn *websocket.Conn, req ActionRequest) {
 	if req.UserID == 0 || req.ReceiverID == 0 {
 		sendErrorToClient(conn, "Missing UserID or ReceiverID")
@@ -682,6 +701,8 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 				"action": "bookmarks_response",
 				"data":   posts,
 			})
+		case "search":
+			handleSearch(conn, req)
 
 		default:
 			sendErrorToClient(conn, "Unknown action")

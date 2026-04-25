@@ -43,6 +43,7 @@ type ActionRequest struct {
 	ReceiverID   int      `json:"receiver_id,omitempty"`
 	PostID       int      `json:"post_id,omitempty"`
 	Content      string   `json:"content,omitempty"`
+	Query        string   `json:"query,omitempty"`
 	ImageURLs    []string `json:"image_urls,omitempty"`
 	ImageURL     string   `json:"image_url,omitempty"`
 	Token        string   `json:"token,omitempty"`

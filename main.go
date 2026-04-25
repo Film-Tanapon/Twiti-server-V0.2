@@ -53,6 +53,7 @@ func main() {
 
 	// WebSocket Route เดิมของคุณ
 	http.HandleFunc("/", handleConnections)
+	http.HandleFunc("/ws", handleConnections)
 
 	fmt.Println("🚀 Server Started on port", port, "...")
 	log.Fatal(http.ListenAndServe("0.0.0.0:"+port, nil))

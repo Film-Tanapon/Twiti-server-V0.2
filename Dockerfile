@@ -3,7 +3,7 @@ FROM golang:1.25.7-alpine AS builder
 
 WORKDIR /app
 
-RUN go install github.com/cosmtrek/air@latest
+RUN go install github.com/air-verse/air@latest
 
 # 1. ก๊อปปี้ทั้ง go.mod และ go.sum (รวบเป็นบรรทัดเดียวได้เลย)
 COPY go.mod go.sum ./
